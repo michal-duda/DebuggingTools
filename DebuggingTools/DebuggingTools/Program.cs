@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Microsoft.Diagnostics.Runtime;
@@ -30,7 +31,8 @@ namespace DebuggingTools
                 Console.WriteLine("Please provide path to memory dump");
                 return;
             }
-            
+
+            var tasksObjests = new HashSet<ulong>();
             using (var dataTarget = DataTarget.LoadCrashDump(args[0]))
             {
                 ClrInfo runtimeInfo = dataTarget.ClrVersions[0];  // just using the first runtime
@@ -45,10 +47,71 @@ namespace DebuggingTools
                         if (flagsValue != null && flagsValue is int stateFlags)
                         {
                             var status = GetTaskStatus(stateFlags);
-                            Console.WriteLine($"Found {type.Name}, state {status}");
+                            Console.WriteLine($"Found {type.Name}, state {status}, memory address {obj}");
+                            tasksObjests.Add(obj);
                         }
                     }
+                }
 
+                Console.WriteLine("\nEnter memory address to explore GC roots or enter to end\n");
+
+                while (true)
+                {
+                    if (ulong.TryParse(Console.ReadLine(), out var address) && tasksObjests.Contains(address))
+                    {
+                        Console.WriteLine();
+                        ShowMemoryRoots(runtime.Heap, address);
+                    }
+                    else
+                    {
+                        return;
+                    }
+                }
+            }
+
+        }
+
+        private static void ShowMemoryRoots(ClrHeap heap, ulong address)
+        {
+            foreach (var root in heap.EnumerateRoots())
+            {
+                FindTrace(heap, root.Object, address, new HashSet<ulong>(), new Stack<string>());
+            }
+        }
+
+        private static void FindTrace(ClrHeap heap, ulong source, ulong target, HashSet<ulong> visited, Stack<string> stack)
+        {
+            if (visited.Contains(source))
+            {
+                return;
+            }
+
+            visited.Add(source);
+            var type = heap.GetObjectType(source);
+            if (type != null)
+            {
+                stack.Push(type.Name);
+                type.EnumerateRefsOfObject(source, (innerObject, fieldOffset) =>
+                {
+                    if (innerObject == target)
+                    {
+                        var targetType = heap.GetObjectType(target);
+                        Console.WriteLine(targetType.Name);
+                        while (stack.Count > 0)
+                        {
+                            Console.WriteLine(stack.Pop());
+                        }
+                        Console.WriteLine();
+                    }
+                    else
+                    {
+                        FindTrace(heap, innerObject, target, visited, stack);
+                    }
+                });
+
+                if (stack.Count > 0)
+                {
+                    stack.Pop();
                 }
             }
         }
